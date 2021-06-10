@@ -2,85 +2,77 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"os/signal"
-	"runtime"
-	"runtime/pprof"
 	"syscall"
 	"time"
 )
 
-func init() {
-	runtime.SetCPUProfileRate(500)
-}
-
-func cpuBound(ctx context.Context, n int) {
+func cpuBound(n int) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
-	//occasionally check if we should return
-	ticker := time.NewTicker(time.Millisecond * 10)
 	for {
 		fmt.Fprintf(f, ".")
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			continue
-		}
 	}
+}
 
+// genrandIntsList returns a slice of ints
+// of length and in range (min, max-1)
+func genrandIntsList(min, max, length int) []int {
+	xs := make([]int, length)
+
+	r := rand.New(rand.NewSource(99))
+	for i := 0; i < length; i++ {
+		xs[i] = r.Intn(max-min) + min
+	}
+	return xs
 }
 
 func main() {
-	var cpuProfile = flag.String("cpuprofile", "cpu.pprof", "write cpu profile to file")
-	flag.Parse()
-	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		pprof.StartCPUProfile(f)
-
-		benchThis()
-	}
+	benchThis()
 }
 
 func benchThis() {
-	num := 16
-	var inputs []int
+	num := 4
 	c := make(chan os.Signal, 2)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM) // listen for os interrupts
 
-	r := rand.New(rand.NewSource(99))
-	for i := 0; i < num; i++ {
-		inputs = append(inputs, r.Intn(100))
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	go func() {
-		<-c
-		cancel()
+	returnCh := make(chan int)                              // notifies task runner about task completion
+	ctx, cancel := context.WithCancel(context.Background()) // create cancellable context
+	go func() {                                             // notify tasks about shutdown
+		select {
+		case <-c: // check for any os signals
+		case <-time.After(10 * time.Second): // check if we should timeout
+		}
+		cancel() // send cancel down the context
 	}()
 
-	returnCh := make(chan int)
-	// take my cpu - all of it
+	//generate inputs
+	inputs := genrandIntsList(0, 100, num)
 	for i := 0; i < num; i++ {
-		go func(idx, val int) {
-			defer fmt.Printf("Goodbye %d\n", idx)
-			cpuBound(ctx, val)
-			returnCh <- 1
-		}(i, inputs[i])
+		go func(ctx context.Context, idx, val int) {
+			defer func() {
+				if r := recover(); r != nil { // ensure we always notify task runner
+
+					fmt.Printf("Goodbye %d\n", idx)
+
+					returnCh <- 1 // propagate shutdown back from this routine
+				}
+			}()
+
+			go cpuBound(val)
+
+			<-ctx.Done()      //task is running now, we'll w ait for a shutdown signal(via cancel)
+			panic("stopping") // unwind stack to ensure we notify about completion
+		}(ctx, i, inputs[i])
 	}
 
+	// wait for everything to finish
 	for i := 0; i < num; i++ {
 		<-returnCh
 	}

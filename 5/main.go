@@ -3,19 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
-	"os/signal"
-	"runtime"
-	"runtime/pprof"
-	"sync"
-	"syscall"
 	"time"
 )
-
-func init() {
-	runtime.SetCPUProfileRate(500)
-}
 
 func timeBound(n int) {
 	f, err := os.Open(os.DevNull)
@@ -30,54 +20,40 @@ func timeBound(n int) {
 }
 
 func main() {
-	var cpuProfile = flag.String("cpuprofile", "cpu.pprof", "write cpu profile to file")
-	flag.Parse()
-	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		pprof.StartCPUProfile(f)
-
-		benchThis()
-	}
+	benchThis()
 }
 
 func benchThis() {
 	num := 10
-	poolSize := 2
+	var poolSize = flag.Int("poolsize", num, "number of worker goroutines per pool")
+	flag.Parse()
 
-	c := make(chan os.Signal, 2)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-	returnCh := make(chan int)
-
-	// poor man's pooler
 	var numActive int
 	var numCompleted int
-	var mu sync.Mutex
-	for numCompleted != num {
-		fmt.Println(numActive, numCompleted)
-		go func(mu *sync.Mutex) {
-			func() {
-				mu.Lock()
-				defer mu.Unlock()
-				numActive = numActive + 1
-			}()
-			timeBound(10)
-			fmt.Println("stopped one")
-			returnCh <- 1
-		}(&mu)
-		if numActive >= poolSize {
-			<-returnCh
-			func() {
-				mu.Lock()
-				defer mu.Unlock()
-				numActive = numActive - 1
-			}()
-			numCompleted = numCompleted + 1
+
+	workCh := make(chan func())
+	returnCh := make(chan int)
+
+	go func() {
+		for i := 0; i < num; i++ {
+
+			workCh <- func() {
+				timeBound(10)
+				returnCh <- 1
+			}
+
 		}
-		time.Sleep(100 * time.Millisecond)
+		close(workCh)
+	}()
+
+	for f := range workCh {
+		numActive = numActive + 1
+		go f()
+		if numActive >= *poolSize {
+			<-returnCh
+			numCompleted = numCompleted + 1
+			numActive = numActive - 1
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func cpuBound(n int) {
@@ -36,8 +37,7 @@ func main() {
 }
 
 func benchThis() {
-	num := 16
-
+	num := 4
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM) // listen for os interrupts
 
@@ -45,9 +45,12 @@ func benchThis() {
 	returnCh := make(chan int) // notifies task runner about task completion
 
 	go func() { // notify tasks about shutdown
-		<-c // wait for os signals
+		select {
+		case <-c: // check for any os signals
+		case <-time.After(10 * time.Second): // check if we should timeout
+		}
 		for i := 0; i < num; i++ {
-			exitCh <- 1
+			exitCh <- true // trigger shutdown
 		}
 	}()
 

@@ -1,55 +1,27 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"os/signal"
-	"runtime"
-	"runtime/pprof"
 	"syscall"
 	"time"
 )
 
-func init() {
-	runtime.SetCPUProfileRate(500)
-}
-
-func cpuBound(n int, exitCh chan int) {
+func cpuBound(n int) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
 		panic(err)
 	}
 	defer f.Close()
-	//occasionally check if we should return
-	ticker := time.NewTicker(time.Millisecond * 10)
 	for {
 		fmt.Fprintf(f, ".")
-		select {
-		case <-exitCh:
-			return
-		case <-ticker.C:
-			continue
-		}
 	}
-
 }
 
 func main() {
-	var cpuProfile = flag.String("cpuprofile", "cpu.pprof", "write cpu profile to file")
-	flag.Parse()
-	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		pprof.StartCPUProfile(f)
-
-		benchThis()
-	}
+	benchThis()
 }
 
 func benchThis() {
@@ -63,11 +35,11 @@ func benchThis() {
 		inputs = append(inputs, r.Intn(100))
 	}
 
-	exitCh := make(chan int)
+	exitCh := make(chan string)
 	returnCh := make(chan int)
-	var cause string = "unknown"
-	go func() {
+	var cause string
 
+	go func() {
 		select {
 		case <-time.After(10 * time.Second):
 			cause = "timeout"
@@ -75,19 +47,27 @@ func benchThis() {
 			cause = "caught interrupt"
 		}
 		for i := 0; i < num; i++ {
-			exitCh <- 1
+			exitCh <- cause
 		}
 	}()
 
 	// take my cpu - all of it
 	for i := 0; i < num; i++ {
 		go func(idx, val int) {
-			cpuBound(val, exitCh)
-			fmt.Printf("Goodbye cause %s\n", cause)
-			returnCh <- 1
-		}(i, inputs[i])
-	}
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("Goodbye cause %s\n", r)
+					returnCh <- 1
+				}
+			}()
 
+			go cpuBound(val)
+
+			reason := <-exitCh
+			panic(reason)
+		}(i, inputs[i])
+
+	}
 	for i := 0; i < num; i++ {
 		<-returnCh
 	}
